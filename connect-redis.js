@@ -7,7 +7,6 @@ exports.connectRedis = (redisURI) => {
         url: redisURI,
     });
 
-    client.zAdd
     client.on('error', (err) => console.log('redis Client Error', err));
 
     return client.connect();

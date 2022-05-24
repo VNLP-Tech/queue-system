@@ -1,3 +1,5 @@
+require('./model');
+
 class Queue {
     static createJob({
         key,
@@ -19,8 +21,64 @@ class Queue {
     constructor(redisClient, mongoClient) {
         this.jobKey = `vnlp-queue`;
         this.redisClient = redisClient;
-        this.mongoClient = mongoClient;
-        this.handler = () => {};
+
+        this.systemCollection = `SystemConcurrent`;
+        this.systemCCUController = mongoClient.model('SystemConcurrent');
+        this.systemID = null;
+
+        /**
+         * define handler for queue
+         * @param {Job} data
+         */
+        this.handler = (data) => { };
+    }
+
+    async rateLimitQueue() {
+        if (!this.systemID) {
+            throw new Error('queue is not initialized');
+        }
+
+        const system = await this.systemCCUController.findOne({
+            _id: this.systemID,
+        }).lean();
+
+        if (!system) {
+            throw new Error('queue is not initialized');
+        }
+
+        const increaseCCU = await this.systemCCUController.updateOne({
+            _id: this.systemID,
+            currentCCU: {
+                $lt: system.maxCCU,
+            },
+        }, {
+            $inc: {
+                currentCCU: 1,
+            },
+        });
+
+        if (increaseCCU.modifiedCount == 0) {
+            return false;
+        }
+
+        return true;
+    }
+
+    async releaseJob() {
+        if (!this.systemID) {
+            throw new Error('queue is not initialized');
+        }
+
+        return this.systemCCUController.updateOne({
+            _id: this.systemID,
+            currentCCU: {
+                $gt: 0,
+            },
+        }, {
+            $inc: {
+                currentCCU: -1,
+            },
+        });
     }
 
     addConsumer(handler) {
@@ -31,33 +89,38 @@ class Queue {
     }
 
     async add(job) {
-        if (!job || !job.key) {
+        if (!job || !job.key || !job.runAt) {
             return null;
         }
 
         const key = job.key;
-        await this.redisClient.zAdd(this.jobKey, key);
+        const runAt = job.runAt;
+        await this.redisClient.zAdd(this.jobKey, [{
+            score: runAt,
+            value: key,
+        }]);
 
         delete job.key;
         await this.redisClient.set(key, JSON.stringify(job, null, 0));
     }
 
     async pullJob() {
-        const jobKey = await this.redisClient.zPopMin(this.jobKey);
-        if (!jobKey) {
+        const job = await this.redisClient.zPopMin(this.jobKey);
+        if (!job) {
             return null;
         }
         try {
-            const jobData = await this.redisClient.get(jobKey);
-            const structureJobData = JSON.parse(jobData);
+            const { value } = job;
+            const jobData = await this.redisClient.get(value);
+            const structuredJobData = JSON.parse(jobData);
 
-            if (!structuredJobData || typeof structureJobData != 'object') {
+            if (!structuredJobData || typeof structuredJobData != 'object') {
                 return null;
             }
 
             return {
-                ...structureJobData,
-                key: jobKey,
+                ...structuredJobData,
+                key: value,
             };
         } catch (err) {
             console.error(err);
@@ -65,7 +128,21 @@ class Queue {
         }
     }
 
-    init() {
+    async init() {
+        let systemCCU = await this.systemCCUController.findOne({
+            model: 'general',
+        }).lean();
+        if (!systemCCU) {
+            systemCCU = await this.systemCCUController.create({
+                model: 'general',
+                currentCCU: 0,
+                maxCCU: 3,
+            });
+            systemCCU = systemCCU.toObject();
+        }
+
+        this.systemID = systemCCU._id.toString();
+
         return new Promise(async (_, reject) => {
             while (true) {
                 let job;
@@ -76,20 +153,31 @@ class Queue {
                         continue;
                     }
 
-                    if (job.RunAt > Date.now()) {
+                    if (job.runAt > Date.now()) {
+                        await this.add(job);
+                        await this.sleep(500);
+                        continue;
+                    }
+
+                    const canRun = await this.rateLimitQueue();
+                    if (!canRun) {
                         await this.add(job);
                         await this.sleep(500);
                         continue;
                     }
 
                     console.log('consuming job');
-                    await this.handler(job);
-                } catch (err) {
-                    if (job) {
+                    this.handler(job).then(() => {
+                        this.releaseJob();
+                    }).catch(err => {
                         job.retries += 1;
-                        await this.add(job);
-                    }
-                    console.error('cannot consume job', err);
+                        job.runAt += 60 * 1000;
+                        this.add(job);
+                        this.releaseJob();
+                        console.error('cannot consume job', err);
+                    });
+                } catch (err) {
+                    console.log(err);
                 }
                 await this.sleep(500);
             }

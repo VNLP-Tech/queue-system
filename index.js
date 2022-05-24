@@ -22,9 +22,9 @@ async function main() {
 
     const queue = new Queue(redisClient, mongoClient);
 
-    app.post('/queue', async (req, res) => {
-        const { key, data } = req.body;
-        await queue.add(key, data);
+    app.post('/jobs', async (req, res) => {
+        const data = req.body;
+        await queue.add(Queue.createJob(data));
 
         res.send('OK');
     });
