@@ -30,7 +30,7 @@ class Queue {
         this.handler = handler;
     }
 
-    add(job) {
+    async add(job) {
         if (!job || !job.key) {
             return null;
         }
@@ -44,7 +44,7 @@ class Queue {
 
     async pullJob() {
         const jobKey = await this.redisClient.zPopMin(this.jobKey);
-        if (!job) {
+        if (!jobKey) {
             return null;
         }
         try {

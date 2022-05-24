@@ -22,7 +22,7 @@ async function main() {
 
     const queue = new Queue(redisClient, mongoClient);
 
-    app.post('/queue', (req, res) => {
+    app.post('/queue', async (req, res) => {
         const { key, data } = req.body;
         await queue.add(key, data);
 
@@ -36,7 +36,7 @@ async function main() {
     });
 
     app.listen(port, () => {
-        console.log(`🍣 Server started at port ${port}🍣`);
+        console.log(`🍣Server started at port ${port}🍣`);
     });
 }
 
