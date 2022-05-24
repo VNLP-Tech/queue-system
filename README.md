@@ -1,6 +1,11 @@
 # queue-system
 Base queue for call system
 
+Problem:
+- Our system need limit number of concurrent calls at a threshold.
+- We can change the limit on the fly, at runtime.
+- Our limitation should be distributed limit for multiple instances.
+
 ### Installation
 ```bash
 # install dependencies
